@@ -1,0 +1,252 @@
+# PDF Compressor
+
+대용량 PDF 파일을 빠르고 간편하게 압축하는 웹 애플리케이션입니다.
+Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된 풀스택 Docker 환경에서 동작합니다.
+
+---
+
+## 주요 기능
+
+- **드래그 앤 드롭** 파일 업로드 (최대 20개 동시, 파일당 512MB)
+- **4가지 압축 프리셋** (screen / ebook / printer / prepress)
+- **3가지 압축 엔진** 지원 및 자동 폴백 (Ghostscript → qpdf → pikepdf)
+- **실시간 진행률** 표시 및 2초 폴링 상태 갱신
+- **중복 파일 감지** (SHA-256 해시 기반 결과 재사용)
+- **배치 ZIP 다운로드** (여러 파일 동시 다운로드)
+- **24시간 자동 파일 만료** 및 정리 스케줄러
+- **암호화된 PDF 자동 거부**
+- 한글 파일명 다운로드 지원 (RFC 5987)
+
+---
+
+## 아키텍처
+
+```
+Browser
+  │
+  ▼
+Nginx (port 8082)  ──────────────────────────────┐
+  │                                              │
+  ▼ /api/*                                       ▼ /*
+FastAPI Backend (port 8001)            Next.js Frontend (port 3001)
+  │
+  ├── SQLite (job 메타데이터)
+  ├── Redis (Celery 브로커 & 결과 저장)
+  │
+  ▼
+Celery Worker (압축 실행)
+  │
+  ├── Ghostscript
+  ├── qpdf
+  └── pikepdf
+
+Celery Beat (매시간 만료 파일 정리)
+```
+
+### 요청 흐름
+
+1. 브라우저 → `POST /api/upload` → 파일 저장 + Job DB 레코드 생성 + Celery 태스크 큐 등록
+2. Celery Worker → PDF 압축 실행 → `/data/results/` 저장
+3. 프론트엔드 → 2초마다 `GET /api/jobs/{id}` 폴링 → 완료 시 다운로드 버튼 활성화
+4. `GET /api/jobs/{id}/download` → 압축 파일 전송
+
+---
+
+## 압축 프리셋
+
+| 프리셋 | DPI | JPEG 품질 | 용도 |
+|--------|-----|-----------|------|
+| `screen` | 72 | 30% | 최대 압축 (화면 열람용) |
+| `ebook` | 150 | 60% | **기본값** — 균형 |
+| `printer` | 300 | 80% | 인쇄 품질 |
+| `prepress` | 300 | 90% | 고품질 인쇄 |
+
+---
+
+## 빠른 시작
+
+### 사전 요구사항
+
+- [Docker](https://docs.docker.com/get-docker/) 24.0+
+- [Docker Compose](https://docs.docker.com/compose/) v2.0+
+
+### 실행
+
+```bash
+# 1. 저장소 클론
+git clone https://github.com/mesmeriz2/PDF-compressor.git
+cd PDF-compressor
+
+# 2. 환경 변수 설정
+cp env.example .env
+# .env 파일을 열어 필요한 값 수정 (기본값으로도 동작)
+
+# 3. 전체 스택 빌드 및 시작
+docker compose up -d --build
+
+# 4. 로그 확인
+docker compose logs -f
+```
+
+### 접속
+
+| 서비스 | URL |
+|--------|-----|
+| **프론트엔드** | http://localhost:3001 |
+| **백엔드 API** | http://localhost:8001 |
+| **Nginx 통합** | http://localhost:8082 |
+| **API 문서** | http://localhost:8001/docs |
+
+### 중지
+
+```bash
+docker compose down
+
+# 볼륨(데이터)까지 삭제
+docker compose down -v
+```
+
+---
+
+## 환경 변수
+
+`env.example`을 복사하여 `.env` 파일로 사용합니다.
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `REDIS_HOST` | `redis` | Redis 호스트명 |
+| `REDIS_PORT` | `6379` | Redis 포트 |
+| `MAX_UPLOAD_SIZE_MB` | `512` | 파일당 최대 업로드 크기 (MB) |
+| `MAX_FILES_PER_BATCH` | `20` | 배치당 최대 파일 수 |
+| `WORKER_CONCURRENCY` | `1` | Celery 동시 작업 수 |
+| `RETENTION_HOURS` | `24` | 압축 파일 보관 시간 |
+| `ENABLE_DEDUPLICATION` | `true` | 동일 파일+옵션 결과 재사용 |
+| `ENABLE_ENGINE_FALLBACK` | `true` | 엔진 자동 폴백 |
+| `LOG_LEVEL` | `WARNING` | 로그 레벨 |
+| `CORS_ORIGINS` | _(콤마 구분)_ | 허용 CORS 출처 |
+| `ENABLE_ANTIVIRUS` | `false` | ClamAV 스캔 활성화 |
+| `WEBHOOK_ENABLED` | `false` | 완료 웹훅 활성화 |
+| `WEBHOOK_URL` | — | 웹훅 수신 URL |
+
+---
+
+## API 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `POST` | `/api/upload` | PDF 업로드 및 압축 작업 등록 |
+| `GET` | `/api/jobs/{id}` | 작업 상태 조회 |
+| `GET` | `/api/jobs` | 작업 목록 조회 |
+| `GET` | `/api/jobs/{id}/download` | 압축 파일 다운로드 |
+| `POST` | `/api/jobs/batch/download` | 여러 파일 ZIP 다운로드 |
+| `POST` | `/api/jobs/{id}/cancel` | 작업 취소 |
+| `DELETE` | `/api/jobs/{id}` | 작업 및 파일 삭제 |
+| `GET` | `/api/healthz` | 헬스체크 |
+| `GET` | `/api/readyz` | 준비 상태 확인 |
+
+전체 API 명세: http://localhost:8001/docs (Swagger UI)
+
+---
+
+## 프로젝트 구조
+
+```
+PDF-compressor/
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── upload.py       # 파일 업로드 엔드포인트
+│   │   │   ├── jobs.py         # 작업 관리 엔드포인트
+│   │   │   └── health.py       # 헬스체크 엔드포인트
+│   │   ├── core/
+│   │   │   ├── config.py       # 환경 설정 (pydantic-settings)
+│   │   │   └── schemas.py      # Pydantic 응답 스키마
+│   │   ├── models/
+│   │   │   ├── job.py          # SQLAlchemy Job 모델
+│   │   │   └── database.py     # SQLite 엔진 설정
+│   │   ├── services/
+│   │   │   ├── compression_engine.py  # 압축 엔진 (전략 패턴)
+│   │   │   └── file_service.py        # 파일 처리 유틸리티
+│   │   ├── workers/
+│   │   │   ├── celery_app.py   # Celery 앱 설정
+│   │   │   └── tasks.py        # compress / cleanup 태스크
+│   │   └── main.py             # FastAPI 앱 진입점
+│   ├── tests/                  # pytest 테스트
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   ├── worker-entrypoint.sh
+│   ├── beat-entrypoint.sh
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   └── page.tsx        # 메인 페이지 (업로드 + 폴링)
+│   │   └── components/
+│   │       ├── FileUploader.tsx # 드래그 앤 드롭 업로더
+│   │       ├── JobCard.tsx      # 작업 카드 (진행률/다운로드)
+│   │       └── SettingsPanel.tsx# 프리셋/엔진 설정
+│   └── Dockerfile
+├── docker-compose.yml
+├── nginx.conf
+└── env.example
+```
+
+---
+
+## 개발
+
+### 백엔드 테스트
+
+```bash
+cd backend
+pip install -r requirements.txt -r requirements-test.txt
+
+# 전체 테스트
+pytest
+
+# 빠른 테스트만 (slow/integration 제외)
+pytest -m "not slow and not integration"
+
+# 특정 파일
+pytest tests/test_api.py
+```
+
+### 프론트엔드 로컬 개발
+
+```bash
+cd frontend
+npm install
+
+# 개발 서버 (백엔드가 별도 실행 중이어야 함)
+npm run dev
+
+# 빌드
+npm run build
+
+# 린트
+npm run lint
+```
+
+### 코드 변경 후 재빌드
+
+```bash
+docker compose up -d --build
+```
+
+---
+
+## 기술 스택
+
+| 분류 | 기술 |
+|------|------|
+| 프론트엔드 | Next.js 14, TypeScript, Tailwind CSS, react-dropzone |
+| 백엔드 | FastAPI, SQLAlchemy, Pydantic v2, SQLite |
+| 태스크 큐 | Celery 5, Redis 7 |
+| PDF 압축 | Ghostscript, qpdf, pikepdf |
+| 인프라 | Docker, Docker Compose, Nginx |
+
+---
+
+## 라이선스
+
+[MIT License](LICENSE)
