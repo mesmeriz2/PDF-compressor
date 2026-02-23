@@ -50,7 +50,7 @@ class CompressionEngine(ABC):
         try:
             with pikepdf.open(pdf_path) as pdf:
                 page_count = len(pdf.pages)
-                
+
                 # 이미지 개수 추정
                 image_count = 0
                 for page in pdf.pages[:10]:  # 처음 10페이지만 샘플링
@@ -59,16 +59,27 @@ class CompressionEngine(ABC):
                         for obj in xobjects:
                             if xobjects[obj].Subtype == '/Image':
                                 image_count += 1
-                
+
                 # 전체 추정
                 if page_count > 10:
                     image_count = int(image_count * (page_count / 10))
-                
+
+                # 비밀번호 없이 열렸으면 압축 가능한 파일로 처리.
+                # Owner 비밀번호만 있는 권한 제한 PDF는 is_encrypted=True를 반환하지만
+                # 실제로는 비밀번호 없이 열리므로 암호화된 것으로 취급하지 않는다.
                 return {
                     'page_count': page_count,
                     'image_count': image_count,
-                    'encrypted': pdf.is_encrypted
+                    'encrypted': False
                 }
+        except pikepdf.PasswordError:
+            # User 비밀번호가 필요한 진짜 암호화 PDF
+            logger.warning(f"암호화된 PDF (비밀번호 필요): {pdf_path}")
+            return {
+                'page_count': 0,
+                'image_count': 0,
+                'encrypted': True
+            }
         except Exception as e:
             logger.error(f"PDF 정보 추출 실패: {e}")
             return {
